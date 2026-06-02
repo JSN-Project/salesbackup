@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Ubuntu:wght@400;700&display=swap" rel="stylesheet">
+  <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
 
   <style>
     body { 
@@ -259,7 +260,20 @@
         <div class="col-2 text-end">Total (Rp)</div>
         <div class="col-1"></div>
       </div>
+      <button class="btn btn-dark btn-sm mb-3 fw-bold w-100 py-2" onclick="openScanner()">📷 MULTI-SCAN CARDS</button>
 
+<div id="scannerContainer" class="hidden mb-3 p-2 bg-dark rounded border border-secondary text-center">
+  <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
+    <video id="camera-stream" autoplay playsinline style="width: 100%; object-fit: contain;"></video>
+    <div style="position: absolute; top: 10%; left: 10%; width: 80%; height: 80%; border: 3px dashed #FFCC00; box-shadow: 0 0 0 2000px rgba(0,0,0,0.5); pointer-events: none;"></div>
+  </div>
+  <canvas id="snapshot-canvas" class="hidden"></canvas>
+  <div id="scan-status" class="text-warning fw-bold my-2 small">Align card and tap Scan!</div>
+  <div class="d-flex gap-2 mt-2">
+    <button class="btn btn-warning w-100 fw-bold" id="capture-btn" onclick="captureAndScan()">SCAN FRAME</button>
+    <button class="btn btn-danger fw-bold" onclick="closeScanner()">CLOSE</button>
+  </div>
+</div>
       <div id="cardContainer"></div>
       <button class="btn btn-info btn-sm mb-4 fw-bold w-100" onclick="addCardRow()">+ Add Pokemon Card</button>
 
@@ -448,11 +462,13 @@
         document.getElementById('welcomeMessage').innerText = res.username;
         
         const userRole = String(res.role).trim().toLowerCase();
-        if(userRole === 'admin') {
-          document.getElementById('adminPanel').classList.remove('hidden');
-          document.getElementById('adminTabs').classList.remove('hidden');
-          addCardRow();
-        }
+   
+      if(userRole === 'admin') {
+      document.getElementById('adminPanel').classList.remove('hidden');
+      document.getElementById('adminTabs').classList.remove('hidden');
+      addCardRow();
+      loadOrbDatabase(); // <-- ADD THIS LINE
+}
         loadTransactions();
       } else {
         document.getElementById('loginError').innerText = res.message;
@@ -1315,6 +1331,196 @@
     document.getElementById('modalBody').innerHTML = modalHtml;
     document.getElementById('txDetailModal').classList.remove('hidden');
   }
+  let parsedOrbDatabase = [];
+let videoStream = null;
+
+// 1. Download ORB data when an Admin logs in
+function loadOrbDatabase() {
+  console.log("Fetching ORB Database...");
+  fetch(API_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: "getGlobalOrbData" })
+  })
+  .then(res => res.json())
+  .then(res => {
+    if (res.success && res.orbDatabase && res.orbDatabase[0].id !== "ERROR") {
+      parseOrbImages(res.orbDatabase);
+    }
+  }).catch(err => console.error("ORB Download Error:", err));
+}
+
+// 2. Convert text to OpenCV Matrices
+function parseOrbImages(rawDb) {
+  parsedOrbDatabase = [];
+  if (typeof cv === 'undefined' || !cv.Mat) {
+    setTimeout(() => parseOrbImages(rawDb), 1000); // Wait for OpenCV to load
+    return;
+  }
+  
+  rawDb.forEach(card => {
+    let des = convertStringToDescriptor(card.orbCode);
+    if (des && !des.empty()) {
+      parsedOrbDatabase.push({
+        id: card.id, name: card.name, rarity: card.rarity, 
+        setCode: card.setCode, descriptors: des
+      });
+    }
+  });
+  console.log(`ORB Ready! Loaded ${parsedOrbDatabase.length} cards.`);
+}
+
+function convertStringToDescriptor(descriptorString) {
+  if (!descriptorString || !descriptorString.includes('|')) return null;
+  try {
+    let parts = descriptorString.split('|');
+    let dims = parts[0].split(',');
+    let rows = parseInt(dims[0]), cols = parseInt(dims[1]), type = parseInt(dims[2]);
+    let binary = atob(parts[1]);
+    let data = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+    
+    let mat = new cv.Mat(rows, cols, type);
+    mat.data.set(data);
+    return mat;
+  } catch (e) { return null; }
+}
+
+// 3. Camera Controls
+async function openScanner() {
+  document.getElementById('scannerContainer').classList.remove('hidden');
+  document.getElementById('scan-status').innerText = "Starting camera...";
+  
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({ 
+      video: { facingMode: 'environment', width: { ideal: 1280 } } 
+    });
+    const video = document.getElementById('camera-stream');
+    video.srcObject = videoStream;
+    document.getElementById('scan-status').innerText = "Align card and tap Scan!";
+  } catch (err) {
+    document.getElementById('scan-status').innerText = "Camera access denied.";
+  }
+}
+
+function closeScanner() {
+  document.getElementById('scannerContainer').classList.add('hidden');
+  if (videoStream) {
+    videoStream.getTracks().forEach(track => track.stop());
+    videoStream = null;
+  }
+}
+
+// 4. Capture & Process ORB
+async function captureAndScan() {
+  const video = document.getElementById('camera-stream');
+  const canvas = document.getElementById('snapshot-canvas');
+  const statusMsg = document.getElementById('scan-status');
+  const btn = document.getElementById('capture-btn');
+  
+  if (parsedOrbDatabase.length === 0) {
+    statusMsg.innerText = "ORB Database still loading. Please wait.";
+    return;
+  }
+  
+  btn.disabled = true;
+  statusMsg.innerText = "Processing Match...";
+  
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  
+  setTimeout(() => {
+    try {
+      let src = cv.imread(canvas);
+      let gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+      let orb = new cv.ORB(500); 
+      let kp = new cv.KeyPointVector();
+      let liveDes = new cv.Mat();
+      orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
+
+      if (liveDes.empty()) {
+        statusMsg.innerText = "No features detected. Move closer/fix lighting.";
+        btn.disabled = false;
+        src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
+        return;
+      }
+
+      let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
+      let bestMatch = null;
+      let maxGoodMatches = 0;
+
+      for (let i = 0; i < parsedOrbDatabase.length; i++) {
+        let dbItem = parsedOrbDatabase[i];
+        let matches = new cv.DMatchVector();
+        try {
+          bf.match(liveDes, dbItem.descriptors, matches);
+          let goodMatches = 0;
+          for (let j = 0; j < matches.size(); j++) {
+            if (matches.get(j).distance < 50) goodMatches++;
+          }
+          if (goodMatches > maxGoodMatches) {
+            maxGoodMatches = goodMatches;
+            bestMatch = dbItem;
+          }
+        } catch (e) {}
+        matches.delete();
+      }
+
+      if (bestMatch && maxGoodMatches > 15) {
+        statusMsg.innerText = `Matched: ${bestMatch.name}! Added to list.`;
+        statusMsg.classList.replace('text-warning', 'text-success');
+        addScannedCardToCart(bestMatch);
+        
+        setTimeout(() => {
+          statusMsg.innerText = "Scan next card!";
+          statusMsg.classList.replace('text-success', 'text-warning');
+          btn.disabled = false;
+        }, 1500);
+      } else {
+        statusMsg.innerText = "No confident match. Try again.";
+        btn.disabled = false;
+      }
+      
+      src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete(); bf.delete();
+    } catch (e) {
+      statusMsg.innerText = "Processing Error.";
+      btn.disabled = false;
+    }
+  }, 50); 
+}
+
+// 5. Format & Auto-Fill into Sales App Cart
+const IGNORED_RARITIES = ["C", "U", "R"]; 
+
+function addScannedCardToCart(match) {
+  // Format Name: Name + Rarity (if high) + (Set)
+  let formattedName = match.name.trim();
+  if (match.rarity && !IGNORED_RARITIES.includes(match.rarity.toUpperCase())) {
+    formattedName += ` ${match.rarity.toUpperCase()}`;
+  }
+  formattedName += ` (${match.setCode.toUpperCase()})`;
+  
+  // Find Price
+  const nameLower = formattedName.toLowerCase();
+  const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
+  
+  // Create Card Entry
+  const card = { 
+    id: Date.now() + Math.random(), 
+    name: formattedName, 
+    price: foundPrice, 
+    qty: 1, 
+    itemDiscount: 0, 
+    total: foundPrice === '' ? 0 : foundPrice * 1 
+  };
+  
+  // Push to main app state
+  cards.push(card);
+  buildRowHTML(card);
+  calculateGrandTotal();
+}
 </script>
 </body>
 </html>
