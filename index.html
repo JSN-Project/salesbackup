@@ -262,17 +262,30 @@
       </div>
       <button class="btn btn-dark btn-sm mb-3 fw-bold w-100 py-2" onclick="openScanner()">📷 MULTI-SCAN CARDS</button>
 
-<div id="scannerContainer" class="hidden mb-3 p-2 bg-dark rounded border border-secondary text-center">
+<div id="scannerContainer" class="hidden mb-3 p-3 bg-dark rounded border border-secondary text-center">
+  
+  <div class="d-flex justify-content-between text-white mb-2">
+    <span id="queue-count" class="badge bg-secondary border border-light">Queue: 0</span>
+    <span id="match-count" class="badge bg-success border border-light">Matched: 0</span>
+  </div>
+
   <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
     <video id="camera-stream" autoplay playsinline style="width: 100%; object-fit: contain;"></video>
-    <div style="position: absolute; top: 10%; left: 10%; width: 80%; height: 80%; border: 3px dashed #FFCC00; box-shadow: 0 0 0 2000px rgba(0,0,0,0.5); pointer-events: none;"></div>
+    <div style="position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 3px dashed #FFCC00; pointer-events: none;"></div>
   </div>
+  
   <canvas id="snapshot-canvas" class="hidden"></canvas>
-  <div id="scan-status" class="text-warning fw-bold my-2 small">Align card and tap Scan!</div>
-  <div class="d-flex gap-2 mt-2">
-    <button class="btn btn-warning w-100 fw-bold" id="capture-btn" onclick="captureAndScan()">SCAN FRAME</button>
-    <button class="btn btn-danger fw-bold" onclick="closeScanner()">CLOSE</button>
+  <div id="scan-status" class="text-warning fw-bold my-2 small">Align ONE card and tap Capture!</div>
+  
+  <div class="row g-2 mt-2">
+    <div class="col-8">
+      <button class="btn btn-warning w-100 fw-bold h-100 py-2" id="capture-btn" onclick="captureToQueue()">📸 CAPTURE</button>
+    </div>
+    <div class="col-4">
+      <button class="btn btn-success w-100 fw-bold h-100" id="done-btn" onclick="finishScanning()">✅ DONE</button>
+    </div>
   </div>
+  <button class="btn btn-outline-danger btn-sm w-100 mt-2 fw-bold" onclick="closeScanner()">CANCEL</button>
 </div>
       <div id="cardContainer"></div>
       <button class="btn btn-info btn-sm mb-4 fw-bold w-100" onclick="addCardRow()">+ Add Pokemon Card</button>
@@ -1387,20 +1400,18 @@ function convertStringToDescriptor(descriptorString) {
 
 // 3. Camera Controls
 async function openScanner() {
-  document.getElementById('scannerContainer').classList.remove('hidden');
-  document.getElementById('scan-status').innerText = "Starting camera...";
+  // --- ADD THESE 5 LINES ---
+  scanQueue = [];
+  matchedResults = [];
+  isProcessingQueue = false;
+  isFinishing = false;
+  updateScannerCounters();
   
-  try {
-    videoStream = await navigator.mediaDevices.getUserMedia({ 
-      video: { facingMode: 'environment', width: { ideal: 1280 } } 
-    });
-    const video = document.getElementById('camera-stream');
-    video.srcObject = videoStream;
-    document.getElementById('scan-status').innerText = "Align card and tap Scan!";
-  } catch (err) {
-    document.getElementById('scan-status').innerText = "Camera access denied.";
-  }
-}
+  document.getElementById('capture-btn').disabled = false;
+  document.getElementById('done-btn').disabled = false;
+  document.getElementById('scannerContainer').classList.remove('hidden');
+  
+  // ... rest of your existing openScanner() code (loading ORB, starting camera) ...
 
 function closeScanner() {
   document.getElementById('scannerContainer').classList.add('hidden');
@@ -1411,104 +1422,156 @@ function closeScanner() {
 }
 
 // 4. Capture & Process ORB
-async function captureAndScan() {
+// --- QUEUE SYSTEM VARIABLES ---
+let scanQueue = [];
+let matchedResults = [];
+let isProcessingQueue = false;
+let isFinishing = false;
+
+// 1. Triggered by the 📸 CAPTURE button
+function captureToQueue() {
+  if (parsedOrbDatabase.length === 0) {
+    alert("ORB Database still loading!");
+    return;
+  }
+
   const video = document.getElementById('camera-stream');
   const canvas = document.getElementById('snapshot-canvas');
   const statusMsg = document.getElementById('scan-status');
-  const btn = document.getElementById('capture-btn');
-  
-  if (parsedOrbDatabase.length === 0) {
-    statusMsg.innerText = "ORB Database still loading. Please wait.";
-    return;
-  }
-  
-  btn.disabled = true;
-  statusMsg.innerText = "Analyzing frame for multiple cards...";
-  
+
+  // Grab the frame instantly
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  
+  // Save frame to queue
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  scanQueue.push(imageData);
+  
+  // UI Feedback
+  updateScannerCounters();
+  statusMsg.innerText = "Snap! Added to queue.";
+  statusMsg.classList.replace('text-warning', 'text-success');
   
   setTimeout(() => {
-    try {
-      let src = cv.imread(canvas);
-      let gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+    if(!isFinishing) {
+      statusMsg.innerText = "Align next card and Capture!";
+      statusMsg.classList.replace('text-success', 'text-warning');
+    }
+  }, 500);
 
-      let orb = new cv.ORB(700); // Increased features slightly to capture multiple cards in one frame
-      let kp = new cv.KeyPointVector();
-      let liveDes = new cv.Mat();
-      orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
+  // If the background processor is asleep, wake it up!
+  if (!isProcessingQueue) {
+    processQueueLoop();
+  }
+}
 
-      if (liveDes.empty()) {
-        statusMsg.innerText = "No features detected. Fix lighting or move closer.";
-        btn.disabled = false;
-        src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
-        return;
-      }
+// 2. The Background Loop
+function processQueueLoop() {
+  // Stop if queue is empty
+  if (scanQueue.length === 0) {
+    isProcessingQueue = false;
+    
+    // If the user already clicked "Done", finalize the cart now
+    if (isFinishing) finalizeMatches();
+    return;
+  }
 
+  isProcessingQueue = true;
+  
+  // Take the first image out of the queue
+  const imageData = scanQueue.shift(); 
+  updateScannerCounters();
+
+  // Yield 50ms to the browser so the UI doesn't freeze, then run ORB
+  setTimeout(() => {
+    runOrbMatch(imageData);
+    processQueueLoop(); // Loop back to check the queue again
+  }, 50);
+}
+
+// 3. The Heavy Math
+function runOrbMatch(imageData) {
+  try {
+    let src = cv.matFromImageData(imageData);
+    let gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+    
+    let orb = new cv.ORB(500); 
+    let kp = new cv.KeyPointVector();
+    let liveDes = new cv.Mat();
+    orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
+
+    if (!liveDes.empty()) {
       let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-      let detectedCards = [];
+      let bestMatch = null;
+      let maxGoodMatches = 0;
 
-      // Loop through ALL items in the database
       for (let i = 0; i < parsedOrbDatabase.length; i++) {
         let dbItem = parsedOrbDatabase[i];
         let matches = new cv.DMatchVector();
-        
         try {
           bf.match(liveDes, dbItem.descriptors, matches);
           let goodMatches = 0;
           for (let j = 0; j < matches.size(); j++) {
             if (matches.get(j).distance < 50) goodMatches++;
           }
-          
-          // If a card crosses the threshold, it's a match! Collect it.
-          // Note: When multiple cards are in frame, keypoints are shared, 
-          // so a threshold of 14-16 is usually the sweet spot.
-          if (goodMatches > 15) {
-            detectedCards.push(dbItem);
+          if (goodMatches > maxGoodMatches) {
+            maxGoodMatches = goodMatches;
+            bestMatch = dbItem;
           }
-        } catch (e) {}
+        } catch(e) {}
         matches.delete();
       }
 
-      if (detectedCards.length > 0) {
-        // Filter out any accidental double-triggers within the same frame check
-        let uniqueMatches = [];
-        let seenIds = new Set();
-        
-        detectedCards.forEach(card => {
-          let uniqueKey = `${card.name}_${card.id}_${card.setCode}`;
-          if (!seenIds.has(uniqueKey)) {
-            seenIds.add(uniqueKey);
-            uniqueMatches.push(card);
-          }
-        });
-
-        statusMsg.innerText = `Successfully detected ${uniqueMatches.length} card(s)!`;
-        statusMsg.classList.replace('text-warning', 'text-success');
-        
-        // Add all found cards into your cart
-        uniqueMatches.forEach(card => {
-          addScannedCardToCart(card);
-        });
-        
-        setTimeout(() => {
-          statusMsg.innerText = "Align cards and tap Scan to add more!";
-          statusMsg.classList.replace('text-success', 'text-warning');
-          btn.disabled = false;
-        }, 2000);
-      } else {
-        statusMsg.innerText = "No confident matches found. Try rearranging the cards.";
-        btn.disabled = false;
+      // If confidence is high, save it!
+      if (bestMatch && maxGoodMatches > 15) {
+        matchedResults.push(bestMatch);
       }
-      
-      src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete(); bf.delete();
-    } catch (e) {
-      statusMsg.innerText = "Processing Error.";
-      btn.disabled = false;
+      bf.delete();
     }
-  }, 50); 
+    src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
+  } catch (e) {
+    console.error("Match error:", e);
+  }
+  
+  updateScannerCounters();
+}
+
+// 4. Triggered by the ✅ DONE button
+function finishScanning() {
+  isFinishing = true;
+  document.getElementById('capture-btn').disabled = true;
+  document.getElementById('done-btn').disabled = true;
+  
+  if (scanQueue.length > 0 || isProcessingQueue) {
+    document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
+    document.getElementById('scan-status').className = "text-info fw-bold my-2 small";
+  } else {
+    finalizeMatches();
+  }
+}
+
+// 5. Applies everything to the cart and closes
+function finalizeMatches() {
+  let count = matchedResults.length;
+  
+  // Run your existing cart function for each match
+  matchedResults.forEach(match => addScannedCardToCart(match));
+  
+  closeScanner();
+  
+  if (count > 0) {
+    alert(`Added ${count} card(s) to the transaction!`);
+  } else {
+    alert("No cards were recognized.");
+  }
+}
+
+function updateScannerCounters() {
+  document.getElementById('queue-count').innerText = `Queue: ${scanQueue.length}`;
+  document.getElementById('match-count').innerText = `Matched: ${matchedResults.length}`;
 }
 
 // 5. Format & Auto-Fill into Sales App Cart
