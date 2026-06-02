@@ -272,6 +272,7 @@
   <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
     <video id="camera-stream" autoplay playsinline style="width: 100%; object-fit: contain;"></video>
     <div style="position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 3px dashed #FFCC00; pointer-events: none;"></div>
+    <div id="flash-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; transition: opacity 0.15s ease-out;"></div>
   </div>
   
   <canvas id="snapshot-canvas" class="hidden"></canvas>
@@ -1408,6 +1409,7 @@ async function openScanner() {
   
   document.getElementById('capture-btn').disabled = false;
   document.getElementById('done-btn').disabled = false;
+  document.getElementById('done-btn').innerHTML = "✅ DONE"; // <-- ADD THIS LINE
   document.getElementById('scannerContainer').classList.remove('hidden');
   document.getElementById('scan-status').innerText = "Starting camera...";
   
@@ -1439,6 +1441,7 @@ let isProcessingQueue = false;
 let isFinishing = false;
 
 // 1. Triggered by the 📸 CAPTURE button
+// 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
   if (parsedOrbDatabase.length === 0) {
     alert("ORB Database still loading!");
@@ -1448,6 +1451,14 @@ function captureToQueue() {
   const video = document.getElementById('camera-stream');
   const canvas = document.getElementById('snapshot-canvas');
   const statusMsg = document.getElementById('scan-status');
+
+  // --- NEW: TRIGGER CAMERA FLASH ---
+  const flash = document.getElementById('flash-overlay');
+  if (flash) {
+    flash.style.opacity = '1';
+    setTimeout(() => { flash.style.opacity = '0'; }, 150);
+  }
+  // ---------------------------------
 
   // Grab the frame instantly
   canvas.width = video.videoWidth;
@@ -1552,8 +1563,14 @@ function runOrbMatch(imageData) {
 // 4. Triggered by the ✅ DONE button
 function finishScanning() {
   isFinishing = true;
-  document.getElementById('capture-btn').disabled = true;
-  document.getElementById('done-btn').disabled = true;
+  
+  const capBtn = document.getElementById('capture-btn');
+  const doneBtn = document.getElementById('done-btn');
+  
+  // Disable buttons and change text for visual feedback
+  capBtn.disabled = true;
+  doneBtn.disabled = true;
+  doneBtn.innerHTML = "⏳ WAIT..."; 
   
   if (scanQueue.length > 0 || isProcessingQueue) {
     document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
