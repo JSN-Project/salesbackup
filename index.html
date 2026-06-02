@@ -1466,7 +1466,8 @@ let scanQueue = [];
 let matchedResults = [];
 let isProcessingQueue = false;
 let isFinishing = false;
-let burstTimer = null; // NEW: Timer to delay math while taking rapid photos
+// Make sure this variable is at the top of your script with the others
+let burstTimer = null; 
 
 // 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
@@ -1479,14 +1480,14 @@ function captureToQueue() {
   const canvas = document.getElementById('snapshot-canvas');
   const statusMsg = document.getElementById('scan-status');
 
-  // --- 1. INSTANT FLASH (Optimized to force browser paint) ---
+  // --- 1. INSTANT FLASH ---
   const flash = document.getElementById('flash-overlay');
   if (flash) {
-    flash.style.transition = 'none'; // Remove animation delay
-    flash.style.opacity = '1';       // Turn pure white instantly
-    void flash.offsetWidth;          // Force browser to draw it NOW
-    flash.style.transition = 'opacity 0.2s ease-out'; // Add fade back
-    flash.style.opacity = '0';       // Start fading to clear
+    flash.style.transition = 'none'; 
+    flash.style.opacity = '1';       
+    void flash.offsetWidth;          
+    flash.style.transition = 'opacity 0.15s ease-out'; 
+    flash.style.opacity = '0';       
   }
 
   // --- 2. GRAB IMAGE INSTANTLY ---
@@ -1499,24 +1500,24 @@ function captureToQueue() {
   scanQueue.push(imageData);
   updateScannerCounters();
   
-  statusMsg.innerText = "Snap! Added to queue.";
-  statusMsg.classList.replace('text-warning', 'text-success');
-  
-  setTimeout(() => {
-    if(!isFinishing) {
-      statusMsg.innerText = "Align next card and Capture!";
-      statusMsg.classList.replace('text-success', 'text-warning');
-    }
-  }, 400);
-
-  // --- 3. BURST MODE DELAY ---
-  // Wait 600ms after your LAST click before freezing the thread to do math.
-  // This allows you to rapid-fire the capture button buttery smooth.
+  // --- 3. THE 4-SECOND RESETTING TIMER ---
+  // We lock isProcessingQueue to true so the app knows a batch is pending.
   isProcessingQueue = true; 
+  
+  // Cancel the previous timer if you clicked before 4 seconds were up
   clearTimeout(burstTimer); 
+
+  statusMsg.innerText = `Snap! Queue: ${scanQueue.length}. Processing starts in 4s...`;
+  statusMsg.classList.replace('text-warning', 'text-success');
+
+  // Start a fresh 4-second countdown
   burstTimer = setTimeout(() => {
+    if (!isFinishing) {
+      statusMsg.innerText = "Processing batch in background...";
+      statusMsg.classList.replace('text-success', 'text-info');
+    }
     processQueueLoop();
-  }, 600); 
+  }, 4000); 
 }
 
 // 2. The Background Loop
@@ -1612,21 +1613,27 @@ function runOrbMatch(imageData) {
 }
 
 // 4. Triggered by the ✅ DONE button
+// 4. Triggered by the ✅ DONE button
 function finishScanning() {
   isFinishing = true;
+  document.getElementById('capture-btn').disabled = true;
+  document.getElementById('done-btn').disabled = true;
+  document.getElementById('done-btn').innerHTML = "⏳ WAIT..."; 
   
-  const capBtn = document.getElementById('capture-btn');
-  const doneBtn = document.getElementById('done-btn');
-  
-  // Disable buttons and change text for visual feedback
-  capBtn.disabled = true;
-  doneBtn.disabled = true;
-  doneBtn.innerHTML = "⏳ WAIT..."; 
-  
-  if (scanQueue.length > 0 || isProcessingQueue) {
+  // Kill the 4-second wait timer instantly!
+  clearTimeout(burstTimer);
+
+  if (scanQueue.length > 0) {
+    document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
+    document.getElementById('scan-status').className = "text-info fw-bold my-2 small";
+    
+    // Force the processor to start right now
+    processQueueLoop();
+  } else if (isProcessingQueue) {
     document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
     document.getElementById('scan-status').className = "text-info fw-bold my-2 small";
   } else {
+    // If the queue was empty, just close it out
     finalizeMatches();
   }
 }
