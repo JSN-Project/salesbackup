@@ -1466,28 +1466,35 @@ let scanQueue = [];
 let matchedResults = [];
 let isProcessingQueue = false;
 let isFinishing = false;
+let burstTimer = null; // NEW: Timer to delay math while taking rapid photos
 
 // 1. Triggered by the 📸 CAPTURE button
-// 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
+  if (parsedOrbDatabase.length === 0) {
+    alert("ORB Database still loading!");
+    return;
+  }
+
   const video = document.getElementById('camera-stream');
   const canvas = document.getElementById('snapshot-canvas');
   const statusMsg = document.getElementById('scan-status');
 
-  // 1. TRIGGER CAMERA FLASH
+  // --- 1. INSTANT FLASH (Optimized to force browser paint) ---
   const flash = document.getElementById('flash-overlay');
   if (flash) {
-    flash.style.opacity = '1';
-    setTimeout(() => { flash.style.opacity = '0'; }, 100);
+    flash.style.transition = 'none'; // Remove animation delay
+    flash.style.opacity = '1';       // Turn pure white instantly
+    void flash.offsetWidth;          // Force browser to draw it NOW
+    flash.style.transition = 'opacity 0.2s ease-out'; // Add fade back
+    flash.style.opacity = '0';       // Start fading to clear
   }
 
-  // 2. Grab the frame instantly
+  // --- 2. GRAB IMAGE INSTANTLY ---
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   
-  // 3. Save frame to queue
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   scanQueue.push(imageData);
   updateScannerCounters();
@@ -1500,18 +1507,39 @@ function captureToQueue() {
       statusMsg.innerText = "Align next card and Capture!";
       statusMsg.classList.replace('text-success', 'text-warning');
     }
-  }, 500);
+  }, 400);
 
-  // 4. Start the background loop safely
-  if (!isProcessingQueue) {
-    isProcessingQueue = true; // Lock it immediately
-    
-    // Wait 250ms BEFORE starting the heavy math.
-    // This allows the white flash animation to finish and the camera to unfreeze!
-    setTimeout(() => {
-      processQueueLoop();
-    }, 250); 
+  // --- 3. BURST MODE DELAY ---
+  // Wait 600ms after your LAST click before freezing the thread to do math.
+  // This allows you to rapid-fire the capture button buttery smooth.
+  isProcessingQueue = true; 
+  clearTimeout(burstTimer); 
+  burstTimer = setTimeout(() => {
+    processQueueLoop();
+  }, 600); 
+}
+
+// 2. The Background Loop
+function processQueueLoop() {
+  if (scanQueue.length === 0) {
+    isProcessingQueue = false;
+    if (isFinishing) finalizeMatches();
+    return;
   }
+
+  const imageData = scanQueue.shift(); 
+  updateScannerCounters();
+
+  // requestAnimationFrame ensures the browser paints the live video feed 
+  // BEFORE we lock the brain with OpenCV math
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      runOrbMatch(imageData);
+
+      // Give the camera feed 200ms to unfreeze and breathe before next match
+      setTimeout(processQueueLoop, 200); 
+    }, 10);
+  });
 }
 
 function processQueueLoop() {
@@ -1635,24 +1663,41 @@ function addScannedCardToCart(match) {
   }
   formattedName += ` (${match.setCode.toUpperCase()})`;
   
-  // Find Price
   const nameLower = formattedName.toLowerCase();
-  const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
   
-  // Create Card Entry
-  const card = { 
-    id: Date.now() + Math.random(), 
-    name: formattedName, 
-    price: foundPrice, 
-    qty: 1, 
-    itemDiscount: 0, 
-    total: foundPrice === '' ? 0 : foundPrice * 1 
-  };
-  
-  // Push to main app state
-  cards.push(card);
-  buildRowHTML(card);
-  calculateGrandTotal();
+  // CHECK IF CARD ALREADY EXISTS IN CART
+  let existingCard = cards.find(c => c.name.toLowerCase() === nameLower);
+
+  if (existingCard) {
+    // CARD EXISTS: Increase Qty and update totals
+    existingCard.qty += 1;
+    let p = Number(existingCard.price) || 0;
+    let d = Number(existingCard.itemDiscount) || 0;
+    existingCard.total = Math.max(0, p - d) * existingCard.qty;
+
+    // Update the specific HTML row inputs
+    const rowQtyInput = document.querySelector(`#row_${existingCard.id} input[type="number"]`);
+    if(rowQtyInput) rowQtyInput.value = existingCard.qty;
+    
+    const rowTotalDisplay = document.getElementById(`total_${existingCard.id}`);
+    if(rowTotalDisplay) rowTotalDisplay.innerText = formatRupiah(existingCard.total);
+    
+    calculateGrandTotal();
+  } else {
+    // NEW CARD: Add to cart normally
+    const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
+    const card = { 
+      id: Date.now() + Math.random(), 
+      name: formattedName, 
+      price: foundPrice, 
+      qty: 1, 
+      itemDiscount: 0, 
+      total: foundPrice === '' ? 0 : foundPrice * 1 
+    };
+    cards.push(card);
+    buildRowHTML(card);
+    calculateGrandTotal();
+  }
 }
 </script>
 </body>
