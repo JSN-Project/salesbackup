@@ -264,15 +264,19 @@
 
 <div id="scannerContainer" class="hidden mb-3 p-3 bg-dark rounded border border-secondary text-center">
   
-  <div class="d-flex justify-content-between text-white mb-2">
-    <span id="queue-count" class="badge bg-secondary border border-light">Queue: 0</span>
-    <span id="match-count" class="badge bg-success border border-light">Matched: 0</span>
+  <div class="d-flex justify-content-between align-items-center text-white mb-2">
+    <span id="db-status" class="badge bg-danger border border-light">DB: LOADING</span>
+    <div>
+      <span id="queue-count" class="badge bg-secondary border border-light">Queue: 0</span>
+      <span id="match-count" class="badge bg-success border border-light">Matched: 0</span>
+    </div>
   </div>
 
   <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
     <video id="camera-stream" autoplay playsinline style="width: 100%; object-fit: contain;"></video>
     <div style="position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 3px dashed #FFCC00; pointer-events: none;"></div>
-    <div id="flash-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; transition: opacity 0.15s ease-out;"></div>
+    
+    <div id="flash-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; transition: opacity 0.1s ease-out;"></div>
   </div>
   
   <canvas id="snapshot-canvas" class="hidden"></canvas>
@@ -280,7 +284,7 @@
   
   <div class="row g-2 mt-2">
     <div class="col-8">
-      <button class="btn btn-warning w-100 fw-bold h-100 py-2" id="capture-btn" onclick="captureToQueue()">📸 CAPTURE</button>
+      <button class="btn btn-warning w-100 fw-bold h-100 py-2" id="capture-btn" onclick="captureToQueue()" disabled>📸 CAPTURE</button>
     </div>
     <div class="col-4">
       <button class="btn btn-success w-100 fw-bold h-100" id="done-btn" onclick="finishScanning()">✅ DONE</button>
@@ -1380,7 +1384,17 @@ function parseOrbImages(rawDb) {
       });
     }
   });
-  console.log(`ORB Ready! Loaded ${parsedOrbDatabase.length} cards.`);
+ console.log(`ORB Ready! Loaded ${parsedOrbDatabase.length} cards.`);
+  
+  // --- NEW: UPDATE UI TO GREEN WHEN READY ---
+  const dbStatus = document.getElementById('db-status');
+  const capBtn = document.getElementById('capture-btn');
+  if (dbStatus) {
+    dbStatus.className = "badge bg-success border border-light";
+    dbStatus.innerText = "DB: READY";
+  }
+  if (capBtn) capBtn.disabled = false;
+  // ------------------------------------------
 }
 
 function convertStringToDescriptor(descriptorString) {
@@ -1407,9 +1421,22 @@ async function openScanner() {
   isFinishing = false;
   updateScannerCounters();
   
-  document.getElementById('capture-btn').disabled = false;
+  const capBtn = document.getElementById('capture-btn');
+  const dbStatus = document.getElementById('db-status');
+  
+  // Set Red/Green indicator based on whether DB is loaded
+  if (parsedOrbDatabase.length === 0) {
+    dbStatus.className = "badge bg-danger border border-light";
+    dbStatus.innerText = "DB: LOADING";
+    capBtn.disabled = true;
+  } else {
+    dbStatus.className = "badge bg-success border border-light";
+    dbStatus.innerText = "DB: READY";
+    capBtn.disabled = false;
+  }
+  
   document.getElementById('done-btn').disabled = false;
-  document.getElementById('done-btn').innerHTML = "✅ DONE"; // <-- ADD THIS LINE
+  document.getElementById('done-btn').innerHTML = "✅ DONE";
   document.getElementById('scannerContainer').classList.remove('hidden');
   document.getElementById('scan-status').innerText = "Starting camera...";
   
@@ -1443,35 +1470,28 @@ let isFinishing = false;
 // 1. Triggered by the 📸 CAPTURE button
 // 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
-  if (parsedOrbDatabase.length === 0) {
-    alert("ORB Database still loading!");
-    return;
-  }
-
   const video = document.getElementById('camera-stream');
   const canvas = document.getElementById('snapshot-canvas');
   const statusMsg = document.getElementById('scan-status');
 
-  // --- NEW: TRIGGER CAMERA FLASH ---
+  // 1. TRIGGER CAMERA FLASH
   const flash = document.getElementById('flash-overlay');
   if (flash) {
     flash.style.opacity = '1';
-    setTimeout(() => { flash.style.opacity = '0'; }, 150);
+    setTimeout(() => { flash.style.opacity = '0'; }, 100);
   }
-  // ---------------------------------
 
-  // Grab the frame instantly
+  // 2. Grab the frame instantly
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   
-  // Save frame to queue
+  // 3. Save frame to queue
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   scanQueue.push(imageData);
-  
-  // UI Feedback
   updateScannerCounters();
+  
   statusMsg.innerText = "Snap! Added to queue.";
   statusMsg.classList.replace('text-warning', 'text-success');
   
@@ -1482,34 +1502,37 @@ function captureToQueue() {
     }
   }, 500);
 
-  // If the background processor is asleep, wake it up!
+  // 4. Start the background loop safely
   if (!isProcessingQueue) {
-    processQueueLoop();
+    isProcessingQueue = true; // Lock it immediately
+    
+    // Wait 250ms BEFORE starting the heavy math.
+    // This allows the white flash animation to finish and the camera to unfreeze!
+    setTimeout(() => {
+      processQueueLoop();
+    }, 250); 
   }
 }
 
-// 2. The Background Loop
 function processQueueLoop() {
-  // Stop if queue is empty
   if (scanQueue.length === 0) {
     isProcessingQueue = false;
-    
-    // If the user already clicked "Done", finalize the cart now
     if (isFinishing) finalizeMatches();
     return;
   }
 
-  isProcessingQueue = true;
-  
   // Take the first image out of the queue
   const imageData = scanQueue.shift(); 
   updateScannerCounters();
 
-  // Yield 50ms to the browser so the UI doesn't freeze, then run ORB
+  // Run the heavy math
+  runOrbMatch(imageData);
+
+  // Wait 150ms before tackling the next item in the queue. 
+  // This gives the live camera stream time to render new frames between calculations.
   setTimeout(() => {
-    runOrbMatch(imageData);
-    processQueueLoop(); // Loop back to check the queue again
-  }, 50);
+    processQueueLoop(); 
+  }, 150);
 }
 
 // 3. The Heavy Math
