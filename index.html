@@ -1400,7 +1400,6 @@ function convertStringToDescriptor(descriptorString) {
 
 // 3. Camera Controls
 async function openScanner() {
-  // --- ADD THESE 5 LINES ---
   scanQueue = [];
   matchedResults = [];
   isProcessingQueue = false;
@@ -1410,8 +1409,19 @@ async function openScanner() {
   document.getElementById('capture-btn').disabled = false;
   document.getElementById('done-btn').disabled = false;
   document.getElementById('scannerContainer').classList.remove('hidden');
+  document.getElementById('scan-status').innerText = "Starting camera...";
   
-  // ... rest of your existing openScanner() code (loading ORB, starting camera) ...
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({ 
+      video: { facingMode: 'environment', width: { ideal: 1280 } } 
+    });
+    const video = document.getElementById('camera-stream');
+    video.srcObject = videoStream;
+    document.getElementById('scan-status').innerText = "Align ONE card and tap Capture!";
+  } catch (err) {
+    document.getElementById('scan-status').innerText = "Camera access denied.";
+  }
+}
 
 function closeScanner() {
   document.getElementById('scannerContainer').classList.add('hidden');
