@@ -1352,48 +1352,63 @@
   let parsedOrbDatabase = [];
 let videoStream = null;
 
-// 1. Download ORB data (Updated for IndexedDB)
+// --- MAIN APP LISTENER ---
+cvWorker.onmessage = function(e) {
+  const data = e.data;
+  
+  if (data.type === 'databaseReady') {
+    console.log(`Worker Ready! Loaded ${data.count} cards.`);
+    const dbStatus = document.getElementById('db-status');
+    const capBtn = document.getElementById('capture-btn');
+    if (dbStatus) {
+      dbStatus.className = "badge bg-success border border-light";
+      dbStatus.innerText = "DB: READY";
+    }
+    if (capBtn) capBtn.disabled = false;
+  } 
+  
+  else if (data.type === 'matchResult') {
+    if (data.match) {
+      matchedResults.push(data.match);
+    }
+    updateScannerCounters();
+    
+    // The worker is done with this frame, send the next one!
+    setTimeout(processQueueLoop, 50); 
+  }
+};
+
+// 1. Download ORB data and feed the Worker
 async function loadOrbDatabase() {
   const statusMsg = document.getElementById('scan-status');
   const dbStatus = document.getElementById('db-status');
   
   try {
-    // Check local storage first
     let localData = await getOrbFromLocal();
     
     if (localData && localData.length > 0) {
-      console.log(`Loaded ${localData.length} cards from Local IndexedDB instantly!`);
-      if(statusMsg) statusMsg.innerText = "Parsing local database...";
-      parseOrbImages(localData);
-      return; // Stop here, we don't need to ask Google!
+      if(statusMsg) statusMsg.innerText = "Sending local data to Background Worker...";
+      // Send raw data to the worker to parse
+      cvWorker.postMessage({ type: 'initDatabase', rawDb: localData });
+      return; 
     }
 
-    // If local is empty, fallback to Google Apps Script
-    console.log("Local DB empty. Fetching from Google (this will take a moment)...");
-    if(statusMsg) statusMsg.innerText = "First time setup: Downloading database from cloud...";
+    if(statusMsg) statusMsg.innerText = "Downloading database from cloud...";
     if(dbStatus) dbStatus.innerText = "DB: DOWNLOADING";
 
     const response = await fetch(API_URL, {
       method: 'POST',
       body: JSON.stringify({ action: "getGlobalOrbData" })
     });
-    
     const res = await response.json();
     
     if (res.success && res.orbDatabase && res.orbDatabase[0].id !== "ERROR") {
-      // Save it to the phone so we never have to download it again
-      console.log("Saving new database to phone storage...");
       await saveOrbToLocal(res.orbDatabase);
       
-      // Parse it into OpenCV
-      parseOrbImages(res.orbDatabase);
-    } else {
-      console.error("Cloud download failed.");
-      if(statusMsg) statusMsg.innerText = "Failed to download database.";
+      // Send raw data to the worker to parse
+      cvWorker.postMessage({ type: 'initDatabase', rawDb: res.orbDatabase });
     }
-
   } catch (err) {
-    console.error("Database Error:", err);
     if(statusMsg) statusMsg.innerText = "Storage or Network Error.";
   }
 }
@@ -1552,6 +1567,7 @@ function captureToQueue() {
 }
 
 // 2. The Background Loop
+// 2. The Background Loop (Now delegates to the Web Worker)
 function processQueueLoop() {
   if (scanQueue.length === 0) {
     isProcessingQueue = false;
@@ -1559,8 +1575,15 @@ function processQueueLoop() {
     return;
   }
 
+  // Grab the frame
   const imageData = scanQueue.shift(); 
   updateScannerCounters();
+
+  // Send it to the worker. 
+  // We do NOT call processQueueLoop() again here. 
+  // We wait for the worker to reply via cvWorker.onmessage (Step 2) before continuing.
+  cvWorker.postMessage({ type: 'processFrame', imageData: imageData });
+}
 
   // requestAnimationFrame ensures the browser paints the live video feed 
   // BEFORE we lock the brain with OpenCV math
@@ -1783,6 +1806,120 @@ async function getOrbFromLocal() {
     request.onerror = () => reject(request.error);
   });
 }
+  // --- WEB WORKER SETUP ---
+let cvWorker;
+
+const workerScript = `
+  // 1. Load OpenCV into the background thread
+  importScripts('https://docs.opencv.org/4.8.0/opencv.js');
+
+  let parsedOrbDatabase = [];
+
+  // 2. The string-to-matrix parser (Moved here from main thread)
+  function convertStringToDescriptor(descriptorString) {
+    if (!descriptorString || !descriptorString.includes('|')) return null;
+    try {
+      let parts = descriptorString.split('|');
+      let dims = parts[0].split(',');
+      let rows = parseInt(dims[0]), cols = parseInt(dims[1]), type = parseInt(dims[2]);
+      let binary = atob(parts[1]);
+      let data = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+      
+      let mat = new cv.Mat(rows, cols, type);
+      mat.data.set(data);
+      return mat;
+    } catch (e) { return null; }
+  }
+
+  // 3. Listen for messages from the Main App
+  self.onmessage = function(e) {
+    const data = e.data;
+
+    // EVENT A: Main app sends the raw database to be parsed
+    if (data.type === 'initDatabase') {
+      if (typeof cv === 'undefined' || !cv.Mat) {
+        // If OpenCV hasn't finished loading in the background, wait and try again
+        setTimeout(() => self.onmessage(e), 500);
+        return;
+      }
+      
+      parsedOrbDatabase = [];
+      data.rawDb.forEach(card => {
+        let des = convertStringToDescriptor(card.orbCode);
+        if (des && !des.empty()) {
+          parsedOrbDatabase.push({
+            id: card.id, name: card.name, rarity: card.rarity, 
+            setCode: card.setCode, descriptors: des
+          });
+        }
+      });
+      
+      // Tell main app we are ready
+      postMessage({ type: 'databaseReady', count: parsedOrbDatabase.length });
+    }
+
+    // EVENT B: Main app sends a camera frame to be matched
+    else if (data.type === 'processFrame') {
+      try {
+        let src = cv.matFromImageData(data.imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        
+        let orb = new cv.ORB(500); 
+        let kp = new cv.KeyPointVector();
+        let liveDes = new cv.Mat();
+        orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
+
+        let bestMatch = null;
+        let maxGoodMatches = 0;
+
+        if (!liveDes.empty()) {
+          let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
+
+          for (let i = 0; i < parsedOrbDatabase.length; i++) {
+            let dbItem = parsedOrbDatabase[i];
+            let matches = new cv.DMatchVector();
+            try {
+              bf.match(liveDes, dbItem.descriptors, matches);
+              let goodMatches = 0;
+              for (let j = 0; j < matches.size(); j++) {
+                if (matches.get(j).distance < 50) goodMatches++;
+              }
+              if (goodMatches > maxGoodMatches) {
+                maxGoodMatches = goodMatches;
+                bestMatch = { 
+                  id: dbItem.id, 
+                  name: dbItem.name, 
+                  rarity: dbItem.rarity, 
+                  setCode: dbItem.setCode 
+                };
+              }
+            } catch(err) {}
+            matches.delete();
+          }
+          bf.delete();
+        }
+        
+        src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
+
+        // Send the result back to the main app
+        if (bestMatch && maxGoodMatches > 15) {
+          postMessage({ type: 'matchResult', match: bestMatch });
+        } else {
+          postMessage({ type: 'matchResult', match: null });
+        }
+
+      } catch (err) {
+        postMessage({ type: 'error', error: err.toString() });
+      }
+    }
+  };
+`;
+
+// Boot up the Worker
+const blob = new Blob([workerScript], { type: 'application/javascript' });
+cvWorker = new Worker(URL.createObjectURL(blob));
 </script>
 </body>
 </html>
