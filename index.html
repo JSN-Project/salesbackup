@@ -568,11 +568,14 @@
   }
 
   function addCardRow() {
-    const card = { id: Date.now() + Math.random(), name: '', price: '', qty: 1, itemDiscount: 0, total: 0 };
-    cards.push(card);
-    buildRowHTML(card);
-    calculateGrandTotal();
-  }
+  // Fix: Generate a clean integer ID without decimals
+  const safeId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+  
+  const card = { id: safeId, name: '', price: '', qty: 1, itemDiscount: 0, total: 0 };
+  cards.push(card);
+  buildRowHTML(card);
+  calculateGrandTotal();
+}
 
   function buildRowHTML(card) {
     const container = document.getElementById('cardContainer');
@@ -1671,12 +1674,19 @@ function processQueueLoop() {
   cvWorker.postMessage({ type: 'processFrame', imageData: imageData });
 }
 // 4. Triggered by the ✅ DONE button
-// 4. Triggered by the ✅ DONE button
 function finishScanning() {
   isFinishing = true;
   document.getElementById('capture-btn').disabled = true;
   document.getElementById('done-btn').disabled = true;
   document.getElementById('done-btn').innerHTML = "⏳ WAIT..."; 
+
+  // --- NEW: KILL CAMERA HARDWARE INSTANTLY TO SAVE BATTERY ---
+  if (videoStream) {
+    videoStream.getTracks().forEach(track => track.stop()); // Turn off the physical camera
+    videoStream = null; // Clear the variable
+    document.getElementById('camera-stream').srcObject = null; // Make the video box go black
+  }
+  // ----------------------------------------------------------
 
   // If the worker is still chewing through a backlog, just update the text and wait.
   if (scanQueue.length > 0 || isProcessingQueue) {
@@ -1732,25 +1742,33 @@ function addScannedCardToCart(match) {
     let d = Number(existingCard.itemDiscount) || 0;
     existingCard.total = Math.max(0, p - d) * existingCard.qty;
 
-    // Update the specific HTML row inputs
-    const rowQtyInput = document.querySelector(`#row_${existingCard.id} input[type="number"]`);
-    if(rowQtyInput) rowQtyInput.value = existingCard.qty;
+    // Fix: Safely find the row first, then find the input inside it
+    const rowDiv = document.getElementById(`row_${existingCard.id}`);
+    if (rowDiv) {
+      const rowQtyInput = rowDiv.querySelector('input[type="number"]');
+      if (rowQtyInput) rowQtyInput.value = existingCard.qty;
+    }
     
     const rowTotalDisplay = document.getElementById(`total_${existingCard.id}`);
-    if(rowTotalDisplay) rowTotalDisplay.innerText = formatRupiah(existingCard.total);
+    if (rowTotalDisplay) rowTotalDisplay.innerText = formatRupiah(existingCard.total);
     
     calculateGrandTotal();
   } else {
     // NEW CARD: Add to cart normally
     const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
+    
+    // Fix: Clean integer ID
+    const safeId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+    
     const card = { 
-      id: Date.now() + Math.random(), 
+      id: safeId, 
       name: formattedName, 
       price: foundPrice, 
       qty: 1, 
       itemDiscount: 0, 
       total: foundPrice === '' ? 0 : foundPrice * 1 
     };
+    
     cards.push(card);
     buildRowHTML(card);
     calculateGrandTotal();
