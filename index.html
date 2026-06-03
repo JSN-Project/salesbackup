@@ -1465,28 +1465,6 @@ cvWorker.onmessage = function(e) {
     setTimeout(processQueueLoop, 50); 
   }
 };
-  
-  if (data.type === 'databaseReady') {
-    console.log(`Worker Ready! Loaded ${data.count} cards.`);
-    const dbStatus = document.getElementById('db-status');
-    const capBtn = document.getElementById('capture-btn');
-    if (dbStatus) {
-      dbStatus.className = "badge bg-success border border-light";
-      dbStatus.innerText = "DB: READY";
-    }
-    if (capBtn) capBtn.disabled = false;
-  } 
-  
-  else if (data.type === 'matchResult') {
-    if (data.match) {
-      matchedResults.push(data.match);
-    }
-    updateScannerCounters();
-    
-    // The worker is done with this frame, send the next one!
-    setTimeout(processQueueLoop, 50); 
-  }
-};
 
 // 1. Download ORB data and feed the Worker
 async function loadOrbDatabase() {
