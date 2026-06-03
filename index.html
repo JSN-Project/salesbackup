@@ -1566,8 +1566,7 @@ function captureToQueue() {
   }, 4000); 
 }
 
-// 2. The Background Loop
-// 2. The Background Loop (Now delegates to the Web Worker)
+// 2. The Background Loop (Delegates to the Web Worker)
 function processQueueLoop() {
   if (scanQueue.length === 0) {
     isProcessingQueue = false;
@@ -1581,92 +1580,9 @@ function processQueueLoop() {
 
   // Send it to the worker. 
   // We do NOT call processQueueLoop() again here. 
-  // We wait for the worker to reply via cvWorker.onmessage (Step 2) before continuing.
+  // We wait for the worker to reply via cvWorker.onmessage before continuing.
   cvWorker.postMessage({ type: 'processFrame', imageData: imageData });
 }
-
-  // requestAnimationFrame ensures the browser paints the live video feed 
-  // BEFORE we lock the brain with OpenCV math
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      runOrbMatch(imageData);
-
-      // Give the camera feed 200ms to unfreeze and breathe before next match
-      setTimeout(processQueueLoop, 200); 
-    }, 10);
-  });
-}
-
-function processQueueLoop() {
-  if (scanQueue.length === 0) {
-    isProcessingQueue = false;
-    if (isFinishing) finalizeMatches();
-    return;
-  }
-
-  // Take the first image out of the queue
-  const imageData = scanQueue.shift(); 
-  updateScannerCounters();
-
-  // Run the heavy math
-  runOrbMatch(imageData);
-
-  // Wait 150ms before tackling the next item in the queue. 
-  // This gives the live camera stream time to render new frames between calculations.
-  setTimeout(() => {
-    processQueueLoop(); 
-  }, 150);
-}
-
-// 3. The Heavy Math
-function runOrbMatch(imageData) {
-  try {
-    let src = cv.matFromImageData(imageData);
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-    
-    let orb = new cv.ORB(500); 
-    let kp = new cv.KeyPointVector();
-    let liveDes = new cv.Mat();
-    orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
-
-    if (!liveDes.empty()) {
-      let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-      let bestMatch = null;
-      let maxGoodMatches = 0;
-
-      for (let i = 0; i < parsedOrbDatabase.length; i++) {
-        let dbItem = parsedOrbDatabase[i];
-        let matches = new cv.DMatchVector();
-        try {
-          bf.match(liveDes, dbItem.descriptors, matches);
-          let goodMatches = 0;
-          for (let j = 0; j < matches.size(); j++) {
-            if (matches.get(j).distance < 50) goodMatches++;
-          }
-          if (goodMatches > maxGoodMatches) {
-            maxGoodMatches = goodMatches;
-            bestMatch = dbItem;
-          }
-        } catch(e) {}
-        matches.delete();
-      }
-
-      // If confidence is high, save it!
-      if (bestMatch && maxGoodMatches > 15) {
-        matchedResults.push(bestMatch);
-      }
-      bf.delete();
-    }
-    src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
-  } catch (e) {
-    console.error("Match error:", e);
-  }
-  
-  updateScannerCounters();
-}
-
-// 4. Triggered by the ✅ DONE button
 // 4. Triggered by the ✅ DONE button
 function finishScanning() {
   isFinishing = true;
