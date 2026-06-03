@@ -272,6 +272,13 @@
     </div>
   </div>
 
+  <div class="mb-2">
+    <select id="setFilter" class="form-select form-select-sm bg-dark text-warning border-secondary fw-bold" style="font-family: 'Ubuntu', sans-serif;">
+      <option value="All">🔍 Scan All Sets</option>
+    </select>
+  </div>
+  <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
+
   <div style="position: relative; width: 100%; max-height: 350px; overflow: hidden; border-radius: 8px;">
     <video id="camera-stream" autoplay playsinline style="width: 100%; object-fit: contain;"></video>
     <div style="position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 3px dashed #FFCC00; pointer-events: none;"></div>
@@ -488,6 +495,7 @@
       loadOrbDatabase(); // <-- ADD THIS LINE
 }
         loadTransactions();
+        loadSetCodes();
       } else {
         document.getElementById('loginError').innerText = res.message;
       }
@@ -1417,11 +1425,18 @@ const workerScript = `
 
         let bestMatch = null;
         let maxGoodMatches = 0;
+        let targetSet = data.selectedSet || 'All'; // NEW: Get the set code
 
         if (!liveDes.empty()) {
           let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
           for (let i = 0; i < parsedOrbDatabase.length; i++) {
             let dbItem = parsedOrbDatabase[i];
+            
+            // NEW: Skip cards that don't match the selected Set Code
+            if (targetSet !== 'All' && dbItem.setCode.toUpperCase() !== targetSet.toUpperCase()) {
+              continue; 
+            }
+
             let matches = new cv.DMatchVector();
             try {
               bf.match(liveDes, dbItem.descriptors, matches);
@@ -1439,6 +1454,7 @@ const workerScript = `
           bf.delete();
         }
         src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
+        
         if (bestMatch && maxGoodMatches > 15) {
           postMessage({ type: 'matchResult', match: bestMatch });
         } else {
@@ -1678,6 +1694,13 @@ function processQueueLoop() {
   const imageData = scanQueue.shift(); 
   updateScannerCounters();
 
+  // --- NEW: Get the currently selected Set Code ---
+  const selectedSetCode = document.getElementById('setFilter').value;
+
+  // Send it to the worker along with the Set Code
+  cvWorker.postMessage({ type: 'processFrame', imageData: imageData, selectedSet: selectedSetCode });
+}
+
   // Send it to the worker. 
   // We do NOT call processQueueLoop() again here. 
   // We wait for the worker to reply via cvWorker.onmessage before continuing.
@@ -1833,6 +1856,25 @@ async function getOrbFromLocal() {
     request.onerror = () => reject(request.error);
   });
 }
+  function loadSetCodes() {
+    fetch(API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: "getSetCodes" })
+    })
+    .then(res => res.json())
+    .then(res => {
+      if (res.success && res.sets) {
+        const filter = document.getElementById('setFilter');
+        // Keep the "All" option, clear the rest
+        filter.innerHTML = '<option value="All">🔍 Scan All Sets</option>'; 
+        
+        res.sets.forEach(set => {
+          filter.innerHTML += `<option value="${set.code}">${set.code} - ${set.name}</option>`;
+        });
+      }
+    })
+    .catch(err => console.log("Failed to load sets:", err));
+  }
 </script>
 </body>
 </html>
