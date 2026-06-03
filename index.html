@@ -586,26 +586,26 @@
     row.innerHTML = `
       <div class="col-12 col-md-3">
         <label class="d-md-none fw-bold small text-secondary">Card Name</label>
-        <input type="text" class="form-control" placeholder="Mewtwo ex..." value="${card.name}" list="cardNameSuggestions" oninput="updateCardData(${card.id}, 'name', this.value)">
+        <input type="text" class="form-control" placeholder="Mewtwo ex..." value="${card.name}" list="cardNameSuggestions" oninput="updateCardData('${card.id}', 'name', this.value)">
       </div>
       <div class="col-4 col-md-2">
         <label class="d-md-none fw-bold small text-secondary">Price (Rp)</label>
-        <input type="text" id="priceInput_${card.id}" class="form-control" placeholder="Price" value="${card.price === '' ? '' : formatRupiah(card.price)}" oninput="formatInputRupiah(this); updateCardData(${card.id}, 'price', this.value)">
+        <input type="text" id="priceInput_${card.id}" class="form-control" placeholder="Price" value="${card.price === '' ? '' : formatRupiah(card.price)}" oninput="formatInputRupiah(this); updateCardData('${card.id}', 'price', this.value)">
       </div>
       <div class="col-4 col-md-2">
         <label class="d-md-none fw-bold small text-secondary">Qty</label>
-        <input type="number" class="form-control" placeholder="Qty" value="${card.qty}" oninput="updateCardData(${card.id}, 'qty', this.value)">
+        <input type="number" class="form-control" placeholder="Qty" value="${card.qty}" oninput="updateCardData('${card.id}', 'qty', this.value)">
       </div>
       <div class="col-4 col-md-2">
         <label class="d-md-none fw-bold small text-secondary">Disc/Item</label>
-        <input type="text" class="form-control text-warning fw-bold" placeholder="Disc" value="${card.itemDiscount ? formatRupiah(card.itemDiscount) : ''}" oninput="formatInputRupiah(this); updateCardData(${card.id}, 'itemDiscount', this.value)">
+        <input type="text" class="form-control text-warning fw-bold" placeholder="Disc" value="${card.itemDiscount ? formatRupiah(card.itemDiscount) : ''}" oninput="formatInputRupiah(this); updateCardData('${card.id}', 'itemDiscount', this.value)">
       </div>
       <div class="col-8 col-md-2 fw-bold text-end mt-2 mt-md-0 align-self-center">
         <label class="d-md-none fw-bold small text-secondary d-block">Total</label>
         Rp <span id="total_${card.id}">${formatRupiah(card.total)}</span>
       </div>
       <div class="col-4 col-md-1 text-end mt-2 mt-md-0">
-        <button class="btn btn-danger btn-sm w-100" onclick="removeCard(${card.id})">X</button>
+        <button class="btn btn-danger btn-sm w-100" onclick="removeCard('${card.id}')">X</button>
       </div>
     `;
     container.appendChild(row);
@@ -613,6 +613,8 @@
 
   function updateCardData(id, field, value) {
     const card = cards.find(c => c.id === id);
+    if (!card) return; // Safety check
+
     if(field === 'price') {
       card.price = value === '' ? '' : getRawNumber(value);
     } else if (field === 'itemDiscount') {
@@ -629,8 +631,9 @@
       }
     }
     
-    let p = Number(card.price) || 0;
-    let d = Number(card.itemDiscount) || 0;
+    // Use getRawNumber() instead of Number() to prevent NaN failures
+    let p = getRawNumber(card.price) || 0;
+    let d = getRawNumber(card.itemDiscount) || 0;
     card.total = Math.max(0, p - d) * card.qty;
     
     document.getElementById(`total_${id}`).innerText = formatRupiah(card.total);
@@ -739,8 +742,15 @@
     }
 
     cards.forEach(c => {
-      if(!c.id) c.id = Date.now() + Math.random();
+      // Use the safe ID string approach here too
+      if(!c.id) c.id = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
       c.itemDiscount = c.itemDiscount || 0; 
+
+      // Safely recalculate the item total to overwrite old/corrupt database entries
+      let p = getRawNumber(c.price) || 0;
+      let d = getRawNumber(c.itemDiscount) || 0;
+      c.total = Math.max(0, p - d) * (parseInt(c.qty) || 0);
+
       buildRowHTML(c);
     });
     calculateGrandTotal();
@@ -1723,57 +1733,60 @@ function updateScannerCounters() {
 const IGNORED_RARITIES = ["C", "U", "R"]; 
 
 function addScannedCardToCart(match) {
-  // Format Name: Name + Rarity (if high) + (Set)
-  let formattedName = match.name.trim();
-  if (match.rarity && !IGNORED_RARITIES.includes(match.rarity.toUpperCase())) {
-    formattedName += ` ${match.rarity.toUpperCase()}`;
-  }
-  formattedName += ` (${match.setCode.toUpperCase()})`;
-  
-  const nameLower = formattedName.toLowerCase();
-  
-  // CHECK IF CARD ALREADY EXISTS IN CART
-  let existingCard = cards.find(c => c.name.toLowerCase() === nameLower);
-
-  if (existingCard) {
-    // CARD EXISTS: Increase Qty and update totals
-    existingCard.qty += 1;
-    let p = Number(existingCard.price) || 0;
-    let d = Number(existingCard.itemDiscount) || 0;
-    existingCard.total = Math.max(0, p - d) * existingCard.qty;
-
-    // Fix: Safely find the row first, then find the input inside it
-    const rowDiv = document.getElementById(`row_${existingCard.id}`);
-    if (rowDiv) {
-      const rowQtyInput = rowDiv.querySelector('input[type="number"]');
-      if (rowQtyInput) rowQtyInput.value = existingCard.qty;
+    // --- NEW: Remove the default empty row if it hasn't been used ---
+    if (cards.length === 1 && cards[0].name.trim() === '' && (cards[0].price === '' || cards[0].price === 0)) {
+      removeCard(cards[0].id);
     }
+    // ----------------------------------------------------------------
+
+    // Format Name: Name + Rarity (if high) + (Set)
+    let formattedName = match.name.trim();
+    if (match.rarity && !IGNORED_RARITIES.includes(match.rarity.toUpperCase())) {
+      formattedName += ` ${match.rarity.toUpperCase()}`;
+    }
+    formattedName += ` (${match.setCode.toUpperCase()})`;
     
-    const rowTotalDisplay = document.getElementById(`total_${existingCard.id}`);
-    if (rowTotalDisplay) rowTotalDisplay.innerText = formatRupiah(existingCard.total);
+    const nameLower = formattedName.toLowerCase();
     
-    calculateGrandTotal();
-  } else {
-    // NEW CARD: Add to cart normally
-    const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
-    
-    // Fix: Clean integer ID
-    const safeId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
-    
-    const card = { 
-      id: safeId, 
-      name: formattedName, 
-      price: foundPrice, 
-      qty: 1, 
-      itemDiscount: 0, 
-      total: foundPrice === '' ? 0 : foundPrice * 1 
-    };
-    
-    cards.push(card);
-    buildRowHTML(card);
-    calculateGrandTotal();
+    // CHECK IF CARD ALREADY EXISTS IN CART
+    let existingCard = cards.find(c => c.name.toLowerCase() === nameLower);
+
+    if (existingCard) {
+      // CARD EXISTS: Increase Qty and update totals
+      existingCard.qty += 1;
+      let p = getRawNumber(existingCard.price) || 0;
+      let d = getRawNumber(existingCard.itemDiscount) || 0;
+      existingCard.total = Math.max(0, p - d) * existingCard.qty;
+
+      const rowDiv = document.getElementById(`row_${existingCard.id}`);
+      if (rowDiv) {
+        const rowQtyInput = rowDiv.querySelector('input[type="number"]');
+        if (rowQtyInput) rowQtyInput.value = existingCard.qty;
+      }
+      
+      const rowTotalDisplay = document.getElementById(`total_${existingCard.id}`);
+      if (rowTotalDisplay) rowTotalDisplay.innerText = formatRupiah(existingCard.total);
+      
+      calculateGrandTotal();
+    } else {
+      // NEW CARD: Add to cart normally
+      const foundPrice = latestPrices[nameLower] !== undefined ? latestPrices[nameLower] : '';
+      const safeId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+      
+      const card = { 
+        id: safeId, 
+        name: formattedName, 
+        price: foundPrice, 
+        qty: 1, 
+        itemDiscount: 0, 
+        total: getRawNumber(foundPrice) || 0
+      };
+      
+      cards.push(card);
+      buildRowHTML(card);
+      calculateGrandTotal();
+    }
   }
-}
   // --- INDEXEDDB HELPER FUNCTIONS ---
 const DB_NAME = 'PokemonSalesDB';
 const STORE_NAME = 'OrbDatabase';
