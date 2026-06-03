@@ -1694,17 +1694,13 @@ function processQueueLoop() {
   const imageData = scanQueue.shift(); 
   updateScannerCounters();
 
-  // --- NEW: Get the currently selected Set Code ---
+  // Get the currently selected Set Code
   const selectedSetCode = document.getElementById('setFilter').value;
 
-  // Send it to the worker along with the Set Code
-  cvWorker.postMessage({ type: 'processFrame', imageData: imageData, selectedSet: selectedSetCode });
-}
-
-  // Send it to the worker. 
+  // Send it to the worker along with the Set Code.
   // We do NOT call processQueueLoop() again here. 
   // We wait for the worker to reply via cvWorker.onmessage before continuing.
-  cvWorker.postMessage({ type: 'processFrame', imageData: imageData });
+  cvWorker.postMessage({ type: 'processFrame', imageData: imageData, selectedSet: selectedSetCode });
 }
 // 4. Triggered by the ✅ DONE button
 function finishScanning() {
