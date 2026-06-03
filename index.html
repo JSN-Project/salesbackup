@@ -1349,12 +1349,122 @@
     document.getElementById('modalBody').innerHTML = modalHtml;
     document.getElementById('txDetailModal').classList.remove('hidden');
   }
-  let parsedOrbDatabase = [];
-let videoStream = null;
+  let videoStream = null;
+let isOrbReady = false; // NEW: The main app will check this instead of the array length
 
-// --- MAIN APP LISTENER ---
+// --- 1. WEB WORKER SETUP (Moved up so it exists BEFORE the listener!) ---
+let cvWorker;
+const workerScript = `
+  importScripts('https://docs.opencv.org/4.8.0/opencv.js');
+  let parsedOrbDatabase = [];
+
+  function convertStringToDescriptor(descriptorString) {
+    if (!descriptorString || !descriptorString.includes('|')) return null;
+    try {
+      let parts = descriptorString.split('|');
+      let dims = parts[0].split(',');
+      let rows = parseInt(dims[0]), cols = parseInt(dims[1]), type = parseInt(dims[2]);
+      let binary = atob(parts[1]);
+      let data = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+      let mat = new cv.Mat(rows, cols, type);
+      mat.data.set(data);
+      return mat;
+    } catch (e) { return null; }
+  }
+
+  self.onmessage = function(e) {
+    const data = e.data;
+    if (data.type === 'initDatabase') {
+      if (typeof cv === 'undefined' || !cv.Mat) {
+        setTimeout(() => self.onmessage(e), 500);
+        return;
+      }
+      parsedOrbDatabase = [];
+      data.rawDb.forEach(card => {
+        let des = convertStringToDescriptor(card.orbCode);
+        if (des && !des.empty()) {
+          parsedOrbDatabase.push({
+            id: card.id, name: card.name, rarity: card.rarity, 
+            setCode: card.setCode, descriptors: des
+          });
+        }
+      });
+      postMessage({ type: 'databaseReady', count: parsedOrbDatabase.length });
+    }
+    else if (data.type === 'processFrame') {
+      try {
+        let src = cv.matFromImageData(data.imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        let orb = new cv.ORB(500); 
+        let kp = new cv.KeyPointVector();
+        let liveDes = new cv.Mat();
+        orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
+
+        let bestMatch = null;
+        let maxGoodMatches = 0;
+
+        if (!liveDes.empty()) {
+          let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
+          for (let i = 0; i < parsedOrbDatabase.length; i++) {
+            let dbItem = parsedOrbDatabase[i];
+            let matches = new cv.DMatchVector();
+            try {
+              bf.match(liveDes, dbItem.descriptors, matches);
+              let goodMatches = 0;
+              for (let j = 0; j < matches.size(); j++) {
+                if (matches.get(j).distance < 50) goodMatches++;
+              }
+              if (goodMatches > maxGoodMatches) {
+                maxGoodMatches = goodMatches;
+                bestMatch = { id: dbItem.id, name: dbItem.name, rarity: dbItem.rarity, setCode: dbItem.setCode };
+              }
+            } catch(err) {}
+            matches.delete();
+          }
+          bf.delete();
+        }
+        src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
+        if (bestMatch && maxGoodMatches > 15) {
+          postMessage({ type: 'matchResult', match: bestMatch });
+        } else {
+          postMessage({ type: 'matchResult', match: null });
+        }
+      } catch (err) {
+        postMessage({ type: 'error', error: err.toString() });
+      }
+    }
+  };
+`;
+const blob = new Blob([workerScript], { type: 'application/javascript' });
+cvWorker = new Worker(URL.createObjectURL(blob));
+
+// --- 2. MAIN APP LISTENER ---
 cvWorker.onmessage = function(e) {
   const data = e.data;
+  
+  if (data.type === 'databaseReady') {
+    console.log(`Worker Ready! Loaded ${data.count} cards.`);
+    isOrbReady = true; // Tell the main app the background worker is locked and loaded
+    
+    const dbStatus = document.getElementById('db-status');
+    const capBtn = document.getElementById('capture-btn');
+    if (dbStatus) {
+      dbStatus.className = "badge bg-success border border-light";
+      dbStatus.innerText = "DB: READY";
+    }
+    if (capBtn) capBtn.disabled = false;
+  } 
+  
+  else if (data.type === 'matchResult') {
+    if (data.match) {
+      matchedResults.push(data.match);
+    }
+    updateScannerCounters();
+    setTimeout(processQueueLoop, 50); 
+  }
+};
   
   if (data.type === 'databaseReady') {
     console.log(`Worker Ready! Loaded ${data.count} cards.`);
@@ -1471,7 +1581,7 @@ async function openScanner() {
   const dbStatus = document.getElementById('db-status');
   
   // Set Red/Green indicator based on whether DB is loaded
-  if (parsedOrbDatabase.length === 0) {
+  if (!isOrbReady) {
     dbStatus.className = "badge bg-danger border border-light";
     dbStatus.innerText = "DB: LOADING";
     capBtn.disabled = true;
@@ -1517,7 +1627,7 @@ let burstTimer = null;
 
 // 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
-  if (parsedOrbDatabase.length === 0) {
+  if (!isOrbReady) {
     alert("ORB Database still loading!");
     return;
   }
@@ -1722,120 +1832,6 @@ async function getOrbFromLocal() {
     request.onerror = () => reject(request.error);
   });
 }
-  // --- WEB WORKER SETUP ---
-let cvWorker;
-
-const workerScript = `
-  // 1. Load OpenCV into the background thread
-  importScripts('https://docs.opencv.org/4.8.0/opencv.js');
-
-  let parsedOrbDatabase = [];
-
-  // 2. The string-to-matrix parser (Moved here from main thread)
-  function convertStringToDescriptor(descriptorString) {
-    if (!descriptorString || !descriptorString.includes('|')) return null;
-    try {
-      let parts = descriptorString.split('|');
-      let dims = parts[0].split(',');
-      let rows = parseInt(dims[0]), cols = parseInt(dims[1]), type = parseInt(dims[2]);
-      let binary = atob(parts[1]);
-      let data = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
-      
-      let mat = new cv.Mat(rows, cols, type);
-      mat.data.set(data);
-      return mat;
-    } catch (e) { return null; }
-  }
-
-  // 3. Listen for messages from the Main App
-  self.onmessage = function(e) {
-    const data = e.data;
-
-    // EVENT A: Main app sends the raw database to be parsed
-    if (data.type === 'initDatabase') {
-      if (typeof cv === 'undefined' || !cv.Mat) {
-        // If OpenCV hasn't finished loading in the background, wait and try again
-        setTimeout(() => self.onmessage(e), 500);
-        return;
-      }
-      
-      parsedOrbDatabase = [];
-      data.rawDb.forEach(card => {
-        let des = convertStringToDescriptor(card.orbCode);
-        if (des && !des.empty()) {
-          parsedOrbDatabase.push({
-            id: card.id, name: card.name, rarity: card.rarity, 
-            setCode: card.setCode, descriptors: des
-          });
-        }
-      });
-      
-      // Tell main app we are ready
-      postMessage({ type: 'databaseReady', count: parsedOrbDatabase.length });
-    }
-
-    // EVENT B: Main app sends a camera frame to be matched
-    else if (data.type === 'processFrame') {
-      try {
-        let src = cv.matFromImageData(data.imageData);
-        let gray = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-        
-        let orb = new cv.ORB(500); 
-        let kp = new cv.KeyPointVector();
-        let liveDes = new cv.Mat();
-        orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
-
-        let bestMatch = null;
-        let maxGoodMatches = 0;
-
-        if (!liveDes.empty()) {
-          let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-
-          for (let i = 0; i < parsedOrbDatabase.length; i++) {
-            let dbItem = parsedOrbDatabase[i];
-            let matches = new cv.DMatchVector();
-            try {
-              bf.match(liveDes, dbItem.descriptors, matches);
-              let goodMatches = 0;
-              for (let j = 0; j < matches.size(); j++) {
-                if (matches.get(j).distance < 50) goodMatches++;
-              }
-              if (goodMatches > maxGoodMatches) {
-                maxGoodMatches = goodMatches;
-                bestMatch = { 
-                  id: dbItem.id, 
-                  name: dbItem.name, 
-                  rarity: dbItem.rarity, 
-                  setCode: dbItem.setCode 
-                };
-              }
-            } catch(err) {}
-            matches.delete();
-          }
-          bf.delete();
-        }
-        
-        src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
-
-        // Send the result back to the main app
-        if (bestMatch && maxGoodMatches > 15) {
-          postMessage({ type: 'matchResult', match: bestMatch });
-        } else {
-          postMessage({ type: 'matchResult', match: null });
-        }
-
-      } catch (err) {
-        postMessage({ type: 'error', error: err.toString() });
-      }
-    }
-  };
-`;
-
-// Boot up the Worker
-const blob = new Blob([workerScript], { type: 'application/javascript' });
-cvWorker = new Worker(URL.createObjectURL(blob));
 </script>
 </body>
 </html>
