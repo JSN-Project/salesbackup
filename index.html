@@ -1600,8 +1600,6 @@ let scanQueue = [];
 let matchedResults = [];
 let isProcessingQueue = false;
 let isFinishing = false;
-// Make sure this variable is at the top of your script with the others
-let burstTimer = null; 
 
 // 1. Triggered by the 📸 CAPTURE button
 function captureToQueue() {
@@ -1634,24 +1632,25 @@ function captureToQueue() {
   scanQueue.push(imageData);
   updateScannerCounters();
   
-  // --- 3. THE 4-SECOND RESETTING TIMER ---
-  // We lock isProcessingQueue to true so the app knows a batch is pending.
-  isProcessingQueue = true; 
-  
-  // Cancel the previous timer if you clicked before 4 seconds were up
-  clearTimeout(burstTimer); 
+  // --- 3. UI FEEDBACK ---
+  statusMsg.innerText = `Snap! Queue: ${scanQueue.length}. Processing in background...`;
+  statusMsg.classList.replace('text-warning', 'text-info');
 
-  statusMsg.innerText = `Snap! Queue: ${scanQueue.length}. Processing starts in 4s...`;
-  statusMsg.classList.replace('text-warning', 'text-success');
-
-  // Start a fresh 4-second countdown
-  burstTimer = setTimeout(() => {
+  // Restore the warning text quickly so you know to snap the next card
+  setTimeout(() => {
     if (!isFinishing) {
-      statusMsg.innerText = "Processing batch in background...";
-      statusMsg.classList.replace('text-success', 'text-info');
+      statusMsg.innerText = "Align next card and tap Capture!";
+      statusMsg.classList.replace('text-info', 'text-warning');
     }
+  }, 400);
+
+  // --- 4. START INSTANT PROCESSING ---
+  // If the worker is resting, wake it up. 
+  // If it's already working, it will naturally grab this new image when it finishes its current one.
+  if (!isProcessingQueue) {
+    isProcessingQueue = true; 
     processQueueLoop();
-  }, 4000); 
+  } 
 }
 
 // 2. The Background Loop (Delegates to the Web Worker)
@@ -1672,26 +1671,19 @@ function processQueueLoop() {
   cvWorker.postMessage({ type: 'processFrame', imageData: imageData });
 }
 // 4. Triggered by the ✅ DONE button
+// 4. Triggered by the ✅ DONE button
 function finishScanning() {
   isFinishing = true;
   document.getElementById('capture-btn').disabled = true;
   document.getElementById('done-btn').disabled = true;
   document.getElementById('done-btn').innerHTML = "⏳ WAIT..."; 
-  
-  // Kill the 4-second wait timer instantly!
-  clearTimeout(burstTimer);
 
-  if (scanQueue.length > 0) {
-    document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
-    document.getElementById('scan-status').className = "text-info fw-bold my-2 small";
-    
-    // Force the processor to start right now
-    processQueueLoop();
-  } else if (isProcessingQueue) {
+  // If the worker is still chewing through a backlog, just update the text and wait.
+  if (scanQueue.length > 0 || isProcessingQueue) {
     document.getElementById('scan-status').innerText = "Finishing background processing... please wait.";
     document.getElementById('scan-status').className = "text-info fw-bold my-2 small";
   } else {
-    // If the queue was empty, just close it out
+    // If the queue is already empty, finalize immediately!
     finalizeMatches();
   }
 }
