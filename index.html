@@ -1352,19 +1352,50 @@
   let parsedOrbDatabase = [];
 let videoStream = null;
 
-// 1. Download ORB data when an Admin logs in
-function loadOrbDatabase() {
-  console.log("Fetching ORB Database...");
-  fetch(API_URL, {
-    method: 'POST',
-    body: JSON.stringify({ action: "getGlobalOrbData" })
-  })
-  .then(res => res.json())
-  .then(res => {
-    if (res.success && res.orbDatabase && res.orbDatabase[0].id !== "ERROR") {
-      parseOrbImages(res.orbDatabase);
+// 1. Download ORB data (Updated for IndexedDB)
+async function loadOrbDatabase() {
+  const statusMsg = document.getElementById('scan-status');
+  const dbStatus = document.getElementById('db-status');
+  
+  try {
+    // Check local storage first
+    let localData = await getOrbFromLocal();
+    
+    if (localData && localData.length > 0) {
+      console.log(`Loaded ${localData.length} cards from Local IndexedDB instantly!`);
+      if(statusMsg) statusMsg.innerText = "Parsing local database...";
+      parseOrbImages(localData);
+      return; // Stop here, we don't need to ask Google!
     }
-  }).catch(err => console.error("ORB Download Error:", err));
+
+    // If local is empty, fallback to Google Apps Script
+    console.log("Local DB empty. Fetching from Google (this will take a moment)...");
+    if(statusMsg) statusMsg.innerText = "First time setup: Downloading database from cloud...";
+    if(dbStatus) dbStatus.innerText = "DB: DOWNLOADING";
+
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: "getGlobalOrbData" })
+    });
+    
+    const res = await response.json();
+    
+    if (res.success && res.orbDatabase && res.orbDatabase[0].id !== "ERROR") {
+      // Save it to the phone so we never have to download it again
+      console.log("Saving new database to phone storage...");
+      await saveOrbToLocal(res.orbDatabase);
+      
+      // Parse it into OpenCV
+      parseOrbImages(res.orbDatabase);
+    } else {
+      console.error("Cloud download failed.");
+      if(statusMsg) statusMsg.innerText = "Failed to download database.";
+    }
+
+  } catch (err) {
+    console.error("Database Error:", err);
+    if(statusMsg) statusMsg.innerText = "Storage or Network Error.";
+  }
 }
 
 // 2. Convert text to OpenCV Matrices
@@ -1705,6 +1736,52 @@ function addScannedCardToCart(match) {
     buildRowHTML(card);
     calculateGrandTotal();
   }
+}
+  // --- INDEXEDDB HELPER FUNCTIONS ---
+const DB_NAME = 'PokemonSalesDB';
+const STORE_NAME = 'OrbDatabase';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveOrbToLocal(orbDataArray) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    
+    // Clear old data first, then add the new batch
+    store.clear(); 
+    orbDataArray.forEach(card => store.put(card));
+    
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function getOrbFromLocal() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
 }
 </script>
 </body>
