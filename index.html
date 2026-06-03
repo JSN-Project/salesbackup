@@ -1416,22 +1416,27 @@ const workerScript = `
         let src = cv.matFromImageData(data.imageData);
         let gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-        let orb = new cv.ORB(500); 
+        
+        // INCREASED to 800 to find more distinct features on the card
+        let orb = new cv.ORB(800); 
         let kp = new cv.KeyPointVector();
         let liveDes = new cv.Mat();
         orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
 
         let bestMatch = null;
         let maxGoodMatches = 0;
-        let targetSet = data.selectedSet || 'All'; // NEW: Get the set code
+        
+        // TRIM spaces and enforce uppercase to guarantee exact matching
+        let targetSet = data.selectedSet ? String(data.selectedSet).trim().toUpperCase() : 'ALL';
 
         if (!liveDes.empty()) {
           let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
           for (let i = 0; i < parsedOrbDatabase.length; i++) {
             let dbItem = parsedOrbDatabase[i];
+            let dbSetCode = dbItem.setCode ? String(dbItem.setCode).trim().toUpperCase() : '';
             
-            // NEW: Skip cards that don't match the selected Set Code
-            if (targetSet !== 'All' && dbItem.setCode.toUpperCase() !== targetSet.toUpperCase()) {
+            // STRICT FILTER: If it doesn't match the selected Set Code, skip it instantly
+            if (targetSet !== 'ALL' && dbSetCode !== targetSet) {
               continue; 
             }
 
@@ -1439,8 +1444,10 @@ const workerScript = `
             try {
               bf.match(liveDes, dbItem.descriptors, matches);
               let goodMatches = 0;
+              
+              // STRICTER DISTANCE: Lowered to 42 (from 50) to ignore fuzzy/bad matches
               for (let j = 0; j < matches.size(); j++) {
-                if (matches.get(j).distance < 50) goodMatches++;
+                if (matches.get(j).distance < 42) goodMatches++;
               }
               if (goodMatches > maxGoodMatches) {
                 maxGoodMatches = goodMatches;
@@ -1453,7 +1460,8 @@ const workerScript = `
         }
         src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
         
-        if (bestMatch && maxGoodMatches > 15) {
+        // STRICTER THRESHOLD: Require at least 24 perfect points to trigger a match (was 15)
+        if (bestMatch && maxGoodMatches > 24) {
           postMessage({ type: 'matchResult', match: bestMatch });
         } else {
           postMessage({ type: 'matchResult', match: null });
