@@ -1417,16 +1417,13 @@ const workerScript = `
         let gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
         
-        // INCREASED to 800 to find more distinct features on the card
-        let orb = new cv.ORB(800); 
+        let orb = new cv.ORB(500); 
         let kp = new cv.KeyPointVector();
         let liveDes = new cv.Mat();
         orb.detectAndCompute(gray, new cv.Mat(), kp, liveDes);
 
         let bestMatch = null;
         let maxGoodMatches = 0;
-        
-        // TRIM spaces and enforce uppercase to guarantee exact matching
         let targetSet = data.selectedSet ? String(data.selectedSet).trim().toUpperCase() : 'ALL';
 
         if (!liveDes.empty()) {
@@ -1435,7 +1432,7 @@ const workerScript = `
             let dbItem = parsedOrbDatabase[i];
             let dbSetCode = dbItem.setCode ? String(dbItem.setCode).trim().toUpperCase() : '';
             
-            // STRICT FILTER: If it doesn't match the selected Set Code, skip it instantly
+            // Skip cards that don't match the selected Set Code
             if (targetSet !== 'ALL' && dbSetCode !== targetSet) {
               continue; 
             }
@@ -1444,10 +1441,8 @@ const workerScript = `
             try {
               bf.match(liveDes, dbItem.descriptors, matches);
               let goodMatches = 0;
-              
-              // STRICTER DISTANCE: Lowered to 42 (from 50) to ignore fuzzy/bad matches
               for (let j = 0; j < matches.size(); j++) {
-                if (matches.get(j).distance < 42) goodMatches++;
+                if (matches.get(j).distance < 50) goodMatches++;
               }
               if (goodMatches > maxGoodMatches) {
                 maxGoodMatches = goodMatches;
@@ -1460,8 +1455,7 @@ const workerScript = `
         }
         src.delete(); gray.delete(); orb.delete(); kp.delete(); liveDes.delete();
         
-        // STRICTER THRESHOLD: Require at least 24 perfect points to trigger a match (was 15)
-        if (bestMatch && maxGoodMatches > 24) {
+        if (bestMatch && maxGoodMatches > 15) {
           postMessage({ type: 'matchResult', match: bestMatch });
         } else {
           postMessage({ type: 'matchResult', match: null });
@@ -1509,14 +1503,20 @@ async function loadOrbDatabase() {
   try {
     let localData = await getOrbFromLocal();
     
-    if (localData && localData.length > 0) {
+    // Check if the local cache is old and missing the setCode property
+    const isOldCache = localData && localData.length > 0 && !localData[0].hasOwnProperty('setCode');
+    
+    if (localData && localData.length > 0 && !isOldCache) {
       if(statusMsg) statusMsg.innerText = "Sending local data to Background Worker...";
-      // Send raw data to the worker to parse
       cvWorker.postMessage({ type: 'initDatabase', rawDb: localData });
       return; 
     }
 
-    if(statusMsg) statusMsg.innerText = "Downloading database from cloud...";
+    if (isOldCache) {
+      if(statusMsg) statusMsg.innerText = "Updating database structure... downloading cloud data...";
+    } else {
+      if(statusMsg) statusMsg.innerText = "Downloading database from cloud...";
+    }
     if(dbStatus) dbStatus.innerText = "DB: DOWNLOADING";
 
     const response = await fetch(API_URL, {
@@ -1527,8 +1527,6 @@ async function loadOrbDatabase() {
     
     if (res.success && res.orbDatabase && res.orbDatabase[0].id !== "ERROR") {
       await saveOrbToLocal(res.orbDatabase);
-      
-      // Send raw data to the worker to parse
       cvWorker.postMessage({ type: 'initDatabase', rawDb: res.orbDatabase });
     }
   } catch (err) {
@@ -1703,9 +1701,7 @@ function processQueueLoop() {
   // Get the currently selected Set Code
   const selectedSetCode = document.getElementById('setFilter').value;
 
-  // Send it to the worker along with the Set Code.
-  // We do NOT call processQueueLoop() again here. 
-  // We wait for the worker to reply via cvWorker.onmessage before continuing.
+  // Send it to the worker along with the Set Code
   cvWorker.postMessage({ type: 'processFrame', imageData: imageData, selectedSet: selectedSetCode });
 }
 // 4. Triggered by the ✅ DONE button
